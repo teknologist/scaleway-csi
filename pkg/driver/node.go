@@ -190,13 +190,31 @@ func (d *nodeService) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstag
 
 	if _, err = d.diskUtils.GetDevicePath(volumeID); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return nil, status.Errorf(codes.NotFound, "volume with ID %s not found", volumeID)
+			// Device gone = volume not staged locally. CSI spec MUST: return 0 OK.
+			// Clean up any remaining LUKS mapping and stale mount.
+			klog.V(4).Infof("NodeUnstageVolume: device for volume %s not found, cleaning up", volumeID)
+			if closeErr := d.diskUtils.CloseDevice(volumeID); closeErr != nil {
+				klog.Warningf("NodeUnstageVolume: failed to close device for volume %s: %v", volumeID, closeErr)
+			}
+			if d.diskUtils.IsMounted(stagingTargetPath) {
+				if unmountErr := d.diskUtils.Unmount(stagingTargetPath); unmountErr != nil {
+					klog.Warningf("NodeUnstageVolume: failed to unmount stale staging path %s: %v", stagingTargetPath, unmountErr)
+				}
+			}
+			return &csi.NodeUnstageVolumeResponse{}, nil
 		}
 		return nil, status.Errorf(codes.Internal, "error getting device path for volume with ID %s: %s", volumeID, err.Error())
 	}
 
 	if _, err := os.Stat(stagingTargetPath); errors.Is(err, fs.ErrNotExist) {
-		return nil, status.Errorf(codes.NotFound, "volume with ID %s not found on node", volumeID)
+		// Staging path gone = volume not staged. CSI spec MUST: return 0 OK.
+		// Attempt to close any orphaned LUKS mapping (left over from prior
+		// unmount that succeeded but whose CloseDevice failed).
+		klog.V(4).Infof("NodeUnstageVolume: staging path %s not found for volume %s, cleaning up", stagingTargetPath, volumeID)
+		if closeErr := d.diskUtils.CloseDevice(volumeID); closeErr != nil {
+			klog.Warningf("NodeUnstageVolume: failed to close device for volume %s: %v", volumeID, closeErr)
+		}
+		return &csi.NodeUnstageVolumeResponse{}, nil
 	}
 
 	if d.diskUtils.IsMounted(stagingTargetPath) {
