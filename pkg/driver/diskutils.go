@@ -288,8 +288,8 @@ func (d *diskUtils) IsEncrypted(devicePath string) (bool, error) {
 }
 
 // CheckAndRepairFilesystem checks if the device is accessible and repairs dirty filesystems.
-// It probes the device with blkid to verify it's readable, then runs the appropriate
-// filesystem check tool (e2fsck for ext*, xfs_repair for xfs).
+// It probes the device with blkid to verify it's readable, then runs e2fsck for ext*
+// filesystems. XFS log replay is deferred to mount, so no fsck is run for XFS.
 func (d *diskUtils) CheckAndRepairFilesystem(devicePath string, fsType string) error {
 	// Probe the device with blkid to check if a filesystem exists.
 	// Exit codes: 0 = filesystem found, 2 = no filesystem (blank device), other = error

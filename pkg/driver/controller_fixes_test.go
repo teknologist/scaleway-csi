@@ -2,6 +2,7 @@ package driver
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
@@ -86,6 +87,7 @@ func TestControllerUnpublishVolume_DeletedServer(t *testing.T) {
 }
 
 func TestControllerPublishVolume_ForceDetachDeletedServer(t *testing.T) {
+	t.Parallel()
 	zone := scw.ZoneFrPar1
 
 	deadServer := &instance.Server{
@@ -150,6 +152,7 @@ func TestControllerPublishVolume_ForceDetachDeletedServer(t *testing.T) {
 }
 
 func TestControllerPublishVolume_GenuineConflict(t *testing.T) {
+	t.Parallel()
 	zone := scw.ZoneFrPar1
 
 	server1 := &instance.Server{
@@ -212,7 +215,7 @@ func TestControllerPublishVolume_VolumeLimit(t *testing.T) {
 	// Pre-fill server with MaxVolumesPerNode volumes.
 	volumes := make(map[string]*instance.VolumeServer)
 	for i := 0; i < scaleway.MaxVolumesPerNode; i++ {
-		key := string(rune('0' + i))
+		key := fmt.Sprintf("%d", i)
 		volumes[key] = &instance.VolumeServer{
 			ID:         "existing-vol-" + key,
 			VolumeType: instance.VolumeServerVolumeType("sbs_volume"),
