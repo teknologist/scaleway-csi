@@ -9,10 +9,11 @@ import (
 )
 
 const (
-	cryptsetupCmd     = "cryptsetup"
-	defaultLuksHash   = "sha256"
-	defaultLuksCipher = "aes-xts-plain64"
-	defaultLuksKeyize = "256"
+	cryptsetupCmd        = "cryptsetup"
+	defaultLuksHash      = "sha256"
+	defaultLuksCipher    = "aes-xts-plain64"
+	defaultLuksKeyize    = "256"
+	defaultLuksPBKDFMem  = "131072" // KiB (128MiB) - safe for container memory limits
 )
 
 func luksFormat(devicePath string, passphrase string) error {
@@ -22,6 +23,7 @@ func luksFormat(devicePath string, passphrase string) error {
 		"--hash", defaultLuksHash, // hash algorithm
 		"--cipher", defaultLuksCipher, // the cipher used
 		"--key-size", defaultLuksKeyize, // the size of the encryption key
+		"--pbkdf-memory", defaultLuksPBKDFMem, // cap Argon2id memory to avoid OOM
 		devicePath,        // device to encrypt
 		"--key-file", "-", // read the passphrase from stdin
 	}
@@ -29,8 +31,11 @@ func luksFormat(devicePath string, passphrase string) error {
 	luksFormatCmd := exec.Command(cryptsetupCmd, args...)
 	luksFormatCmd.Stdin = strings.NewReader(passphrase)
 
+	var stderr bytes.Buffer
+	luksFormatCmd.Stderr = &stderr
+
 	if err := luksFormatCmd.Run(); err != nil {
-		return fmt.Errorf("luksFormat failed: %w", err)
+		return fmt.Errorf("luksFormat failed: %w, stderr: %s", err, stderr.String())
 	}
 
 	return nil
@@ -47,8 +52,11 @@ func luksOpen(devicePath string, mapperFile string, passphrase string) error {
 	luksOpenCmd := exec.Command(cryptsetupCmd, args...)
 	luksOpenCmd.Stdin = strings.NewReader(passphrase)
 
+	var stderr bytes.Buffer
+	luksOpenCmd.Stderr = &stderr
+
 	if err := luksOpenCmd.Run(); err != nil {
-		return fmt.Errorf("luksOpen failed: %w", err)
+		return fmt.Errorf("luksOpen failed: %w, stderr: %s", err, stderr.String())
 	}
 
 	return nil
