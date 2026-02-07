@@ -250,15 +250,15 @@ func (f *Fake) DetachVolume(ctx context.Context, volumeID string, zone scw.Zone)
 		return errors.New("volume not in required state, it is not in use")
 	}
 
-	s, ok := f.servers[v.References[0].ProductResourceID]
-	if !ok || ok && s.Zone != zone {
-		return &scw.ResourceNotFoundError{Resource: serverResource, ResourceID: v.References[0].ProductResourceID}
-	}
-
-	for k, vol := range s.Volumes {
-		if vol.ID == volumeID {
-			delete(s.Volumes, k)
-			break
+	// Clean up the server's volume map if the server still exists.
+	// The real API's DetachVolume is volume-centric and succeeds even when the
+	// referenced server is gone (deleted/scaled-down).
+	if s, ok := f.servers[v.References[0].ProductResourceID]; ok && s.Zone == zone {
+		for k, vol := range s.Volumes {
+			if vol.ID == volumeID {
+				delete(s.Volumes, k)
+				break
+			}
 		}
 	}
 
@@ -408,6 +408,14 @@ func (f *Fake) ResizeVolume(ctx context.Context, volumeID string, zone scw.Zone,
 	}
 
 	return &scw.ResourceNotFoundError{Resource: volumeResource, ResourceID: volumeID}
+}
+
+// RemoveServer removes a server from the fake without cleaning up volume references.
+// This simulates a server being deleted while volumes are still attached (ghost references).
+func (f *Fake) RemoveServer(serverID string) {
+	f.mux.Lock()
+	defer f.mux.Unlock()
+	delete(f.servers, serverID)
 }
 
 func (f *Fake) WaitForSnapshot(ctx context.Context, snapshotID string, zone scw.Zone) (*block.Snapshot, error) {

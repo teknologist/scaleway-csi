@@ -209,7 +209,32 @@ func (d *controllerService) ControllerPublishVolume(ctx context.Context, req *cs
 			}, nil
 		}
 
-		return nil, status.Errorf(codes.FailedPrecondition, "volume %s already attached to another node %s", volumeID, volumeServerIDs[0])
+		// Check if the old server still exists before giving up.
+		oldNodeID, oldNodeZone, extractErr := ExtractIDAndZone(volumeServerIDs[0])
+		if extractErr != nil {
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"volume %s already attached to another node %s", volumeID, volumeServerIDs[0])
+		}
+		_, getErr := d.scaleway.GetServer(ctx, oldNodeID, oldNodeZone)
+		if getErr == nil {
+			// Old server still exists — genuine conflict per CSI spec
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"volume %s already attached to another node %s", volumeID, volumeServerIDs[0])
+		}
+		if codeFromScalewayError(getErr) != codes.NotFound {
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"volume %s already attached to another node %s", volumeID, volumeServerIDs[0])
+		}
+		// Server gone — force detach and fall through to attach to new server
+		klog.Infof("ControllerPublishVolume: volume %s attached to deleted server %s, force-detaching", volumeID, volumeServerIDs[0])
+		if detachErr := d.scaleway.DetachVolume(ctx, volumeID, volumeZone); detachErr != nil {
+			if codeFromScalewayError(detachErr) != codes.NotFound {
+				return nil, status.Errorf(codes.Internal,
+					"failed to force-detach volume %s from deleted server %s: %s", volumeID, volumeServerIDs[0], detachErr)
+			}
+			klog.V(2).Infof("ControllerPublishVolume: volume %s already detached", volumeID)
+		}
+		// Fall through to attach to new server below.
 	}
 
 	if len(server.Volumes) == scaleway.MaxVolumesPerNode {
