@@ -127,8 +127,9 @@ func (d *diskUtils) EncryptAndOpenDevice(volumeID string, passphrase string) (st
 			return "", fmt.Errorf("error luks opening device %s: %w", devicePath, err)
 		}
 		// Only attempt re-format for header/device errors, NOT wrong passphrase.
-		// cryptsetup exit codes: 1 = wrong parameters/passphrase, 2 = no permission,
-		// 5 = device error. Treat exit code 1 and 2 as authentication failures.
+		// cryptsetup exit codes: 1 = wrong parameters, 2 = no permission (bad passphrase),
+		// 3 = out of memory, 4 = wrong device, 5 = device already exists/busy.
+		// Treat exit codes 1 and 2 as authentication failures.
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && (exitErr.ExitCode() == 1 || exitErr.ExitCode() == 2) {
 			return "", fmt.Errorf("error luks opening device %s (wrong passphrase?): %w", devicePath, err)
