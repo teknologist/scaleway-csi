@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"strings"
@@ -121,7 +122,27 @@ func (d *diskUtils) EncryptAndOpenDevice(volumeID string, passphrase string) (st
 	}
 
 	if err = luksOpen(devicePath, diskLuksMapperPrefix+volumeID, passphrase); err != nil {
-		return "", fmt.Errorf("error luks opening device %s: %w", devicePath, err)
+		if !isLuks {
+			// Fresh format failed to open - no recovery possible
+			return "", fmt.Errorf("error luks opening device %s: %w", devicePath, err)
+		}
+		// Only attempt re-format for header/device errors, NOT wrong passphrase.
+		// cryptsetup exit codes: 1 = wrong parameters/passphrase, 2 = no permission,
+		// 5 = device error. Treat exit code 1 and 2 as authentication failures.
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && (exitErr.ExitCode() == 1 || exitErr.ExitCode() == 2) {
+			return "", fmt.Errorf("error luks opening device %s (wrong passphrase?): %w", devicePath, err)
+		}
+		// Existing LUKS header but open failed with a non-auth error - possibly
+		// corrupted from a previous interrupted luksFormat (e.g. OOM-killed).
+		// Re-format and retry.
+		klog.Warningf("luksOpen failed for %s, attempting re-format (header may be corrupted): %v", devicePath, err)
+		if err = luksFormat(devicePath, passphrase); err != nil {
+			return "", fmt.Errorf("error re-formatting device %s after luksOpen failure: %w", devicePath, err)
+		}
+		if err = luksOpen(devicePath, diskLuksMapperPrefix+volumeID, passphrase); err != nil {
+			return "", fmt.Errorf("error luks opening device %s after re-format: %w", devicePath, err)
+		}
 	}
 
 	return diskLuksMapperPath + diskLuksMapperPrefix + volumeID, nil
