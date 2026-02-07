@@ -261,6 +261,24 @@ func (d *controllerService) ControllerUnpublishVolume(ctx context.Context, req *
 	if _, err := d.scaleway.GetServer(ctx, nodeID, nodeZone); err != nil {
 		code := codeFromScalewayError(err)
 		if code == codes.NotFound {
+			// Server is gone but volume may still have stale references.
+			// Attempt detach to clean up so volume can be safely regarded as unpublished.
+			// CSI spec: "If node_id cannot be found and volume can be safely regarded as
+			// ControllerUnpublished, the plugin SHOULD return 0 OK."
+			klog.V(2).Infof("ControllerUnpublishVolume: server %s not found, attempting to detach volume %s", nodeID, volumeID)
+			if detachErr := d.scaleway.DetachVolume(ctx, volumeID, volumeZone); detachErr != nil {
+				detachCode := codeFromScalewayError(detachErr)
+				if detachCode == codes.NotFound {
+					// Volume already detached — safe to return success
+					klog.V(2).Infof("ControllerUnpublishVolume: volume %s already detached", volumeID)
+				} else {
+					// Non-trivial detach failure — volume is not safely unpublished.
+					// Return error so the CO retries the unpublish.
+					return nil, status.Errorf(codes.Internal,
+						"server %s not found but failed to detach volume %s: %v",
+						nodeID, volumeID, detachErr)
+				}
+			}
 			return &csi.ControllerUnpublishVolumeResponse{}, nil
 		}
 
