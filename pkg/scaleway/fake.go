@@ -93,7 +93,7 @@ func (f *Fake) AttachVolume(ctx context.Context, serverID string, volumeID strin
 		return &scw.ResourceNotFoundError{Resource: volumeResource, ResourceID: volumeID}
 	}
 
-	if len(s.Volumes) == MaxVolumesPerNode {
+	if len(s.Volumes) >= MaxVolumesPerNode {
 		return errors.New("server has reached max volume capacity")
 	}
 

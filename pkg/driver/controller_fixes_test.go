@@ -103,6 +103,7 @@ func TestControllerPublishVolume_ForceDetachDeletedServer(t *testing.T) {
 
 	cs := newTestControllerService(zone, []*instance.Server{deadServer, aliveServer})
 
+	// Create a volume and attach it to the dead server.
 	ctx := context.Background()
 	vol, err := cs.scaleway.CreateVolume(ctx, "test-vol", "", scaleway.MinVolumeSize, nil, zone)
 	if err != nil {
@@ -112,8 +113,10 @@ func TestControllerPublishVolume_ForceDetachDeletedServer(t *testing.T) {
 		t.Fatalf("AttachVolume: %v", err)
 	}
 
+	// Simulate the dead server being deleted (without cleaning up volume refs).
 	cs.scaleway.(*scaleway.Fake).RemoveServer(deadServer.ID)
 
+	// Now publish the volume to the alive server — should succeed via force-detach.
 	resp, err := cs.ControllerPublishVolume(ctx, &csi.ControllerPublishVolumeRequest{
 		VolumeId: expandZonalID(vol.ID, zone),
 		NodeId:   expandZonalID(aliveServer.ID, zone),
@@ -133,6 +136,7 @@ func TestControllerPublishVolume_ForceDetachDeletedServer(t *testing.T) {
 		t.Fatal("expected non-nil response")
 	}
 
+	// Verify the volume is now attached to the alive server.
 	updatedVol, err := cs.scaleway.GetVolume(ctx, vol.ID, zone)
 	if err != nil {
 		t.Fatalf("GetVolume: %v", err)
@@ -163,6 +167,7 @@ func TestControllerPublishVolume_GenuineConflict(t *testing.T) {
 
 	cs := newTestControllerService(zone, []*instance.Server{server1, server2})
 
+	// Create a volume and attach it to server1.
 	ctx := context.Background()
 	vol, err := cs.scaleway.CreateVolume(ctx, "test-vol", "", scaleway.MinVolumeSize, nil, zone)
 	if err != nil {
@@ -172,6 +177,7 @@ func TestControllerPublishVolume_GenuineConflict(t *testing.T) {
 		t.Fatalf("AttachVolume: %v", err)
 	}
 
+	// Try to publish to server2 — server1 still exists, so this should fail.
 	_, err = cs.ControllerPublishVolume(ctx, &csi.ControllerPublishVolumeRequest{
 		VolumeId: expandZonalID(vol.ID, zone),
 		NodeId:   expandZonalID(server2.ID, zone),
@@ -194,5 +200,57 @@ func TestControllerPublishVolume_GenuineConflict(t *testing.T) {
 	}
 	if st.Code() != codes.FailedPrecondition {
 		t.Errorf("expected code %s, got %s: %s", codes.FailedPrecondition, st.Code(), st.Message())
+	}
+}
+
+// TestControllerPublishVolume_VolumeLimit tests Fix 3: defensive >= check.
+func TestControllerPublishVolume_VolumeLimit(t *testing.T) {
+	t.Parallel()
+	zone := scw.ZoneFrPar1
+	serverID := "server-1"
+
+	// Pre-fill server with MaxVolumesPerNode volumes.
+	volumes := make(map[string]*instance.VolumeServer)
+	for i := 0; i < scaleway.MaxVolumesPerNode; i++ {
+		key := string(rune('0' + i))
+		volumes[key] = &instance.VolumeServer{
+			ID:         "existing-vol-" + key,
+			VolumeType: instance.VolumeServerVolumeType("sbs_volume"),
+		}
+	}
+
+	server := &instance.Server{
+		ID:      serverID,
+		Name:    "full-server",
+		Zone:    zone,
+		Volumes: volumes,
+	}
+
+	cs := newTestControllerService(zone, []*instance.Server{server})
+
+	vol, err := cs.scaleway.CreateVolume(context.Background(), "one-more-vol", "", scaleway.MinVolumeSize, nil, zone)
+	if err != nil {
+		t.Fatalf("CreateVolume failed: %v", err)
+	}
+
+	_, err = cs.ControllerPublishVolume(context.Background(), &csi.ControllerPublishVolumeRequest{
+		VolumeId: expandZonalID(vol.ID, zone),
+		NodeId:   expandZonalID(serverID, zone),
+		VolumeCapability: &csi.VolumeCapability{
+			AccessType: &csi.VolumeCapability_Mount{Mount: &csi.VolumeCapability_MountVolume{}},
+			AccessMode: &csi.VolumeCapability_AccessMode{
+				Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER,
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected ResourceExhausted error")
+	}
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("expected gRPC status error, got: %v", err)
+	}
+	if st.Code() != codes.ResourceExhausted {
+		t.Errorf("expected ResourceExhausted, got %s: %s", st.Code(), st.Message())
 	}
 }

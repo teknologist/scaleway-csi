@@ -237,8 +237,10 @@ func (d *controllerService) ControllerPublishVolume(ctx context.Context, req *cs
 		// Fall through to attach to new server below.
 	}
 
-	if len(server.Volumes) == scaleway.MaxVolumesPerNode {
-		return nil, status.Errorf(codes.ResourceExhausted, "max number of volumes reached for instance %s", nodeID)
+	if len(server.Volumes) >= scaleway.MaxVolumesPerNode {
+		return nil, status.Errorf(codes.ResourceExhausted,
+			"max number of volumes reached for instance %s (%d/%d)",
+			nodeID, len(server.Volumes), scaleway.MaxVolumesPerNode)
 	}
 
 	if err := d.scaleway.AttachVolume(ctx, nodeID, volumeID, volumeZone); err != nil {
