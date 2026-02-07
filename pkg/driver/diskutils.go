@@ -64,6 +64,9 @@ type DiskUtils interface {
 
 	// GetMappedDevicePath returns the path on where the encrypted device with the given ID is mapped.
 	GetMappedDevicePath(volumeID string) (string, error)
+
+	// CheckAndRepairFilesystem checks if the device is accessible and repairs dirty filesystems.
+	CheckAndRepairFilesystem(devicePath string, fsType string) error
 }
 
 type diskUtils struct {
@@ -282,6 +285,66 @@ func (d *diskUtils) GetStatfs(path string) (*unix.Statfs_t, error) {
 
 func (d *diskUtils) IsEncrypted(devicePath string) (bool, error) {
 	return luksIsLuks(devicePath)
+}
+
+// CheckAndRepairFilesystem checks if the device is accessible and repairs dirty filesystems.
+// It probes the device with blkid to verify it's readable, then runs the appropriate
+// filesystem check tool (e2fsck for ext*, xfs_repair for xfs).
+func (d *diskUtils) CheckAndRepairFilesystem(devicePath string, fsType string) error {
+	// Probe the device with blkid to check if a filesystem exists.
+	// Exit codes: 0 = filesystem found, 2 = no filesystem (blank device), other = error
+	probeOut, probeErr := d.kMounter.Exec.Command("blkid", "-p", "-u", "filesystem", devicePath).CombinedOutput()
+	if probeErr != nil {
+		// k8s.io/utils/exec wraps *os/exec.ExitError in ExitErrorWrapper which
+		// implements the kexec.ExitError interface. We must use that interface
+		// (not *os/exec.ExitError) for errors.As to match.
+		var exitErr kexec.ExitError
+		if errors.As(probeErr, &exitErr) && exitErr.ExitStatus() == 2 {
+			// Exit 2 = no filesystem found — blank device, skip fsck.
+			// FormatAndMount will create the filesystem.
+			klog.V(4).Infof("No existing filesystem on %s (blank device), skipping fsck", devicePath)
+			return nil
+		}
+		// Any other error (I/O errors, device not accessible) — block device is broken.
+		// Do NOT proceed to FormatAndMount — it would run mkfs and destroy data.
+		return fmt.Errorf("device %s is not readable (blkid: %v, output: %s); volume may not be properly attached", devicePath, probeErr, string(probeOut))
+	}
+	klog.V(4).Infof("Filesystem detected on %s: %s", devicePath, strings.TrimSpace(string(probeOut)))
+
+	var cmd string
+	var args []string
+
+	switch fsType {
+	case "ext4", "ext3", "ext2":
+		// e2fsck -p: auto-repair safe problems (preen mode)
+		// Only runs full check if superblock dirty flag is set — fast if clean.
+		cmd = "e2fsck"
+		args = []string{"-p", devicePath}
+	case "xfs":
+		// XFS log replay happens automatically on mount, so skip fsck for XFS.
+		// Running xfs_repair on a filesystem with a dirty log fails unless -L is
+		// used (which zeroes the log and loses data). Let mount handle log replay.
+		klog.V(4).Infof("XFS filesystem on %s, skipping fsck (log replay happens on mount)", devicePath)
+		return nil
+	default:
+		klog.V(4).Infof("No filesystem check available for fsType %s, skipping", fsType)
+		return nil
+	}
+
+	klog.V(2).Infof("Running filesystem check: %s %v", cmd, args)
+	out, err := d.kMounter.Exec.Command(cmd, args...).CombinedOutput()
+	if err != nil {
+		klog.Warningf("Filesystem check on %s returned: %v, output: %s", devicePath, err, string(out))
+		// e2fsck exit code 1 = errors corrected (success). Code >= 2 = real problem.
+		var exitErr kexec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitStatus() >= 2 {
+			return fmt.Errorf("e2fsck found uncorrectable errors on %s (exit %d): %s", devicePath, exitErr.ExitStatus(), string(out))
+		}
+		// e2fsck exit 1 = corrected → success
+	}
+
+	klog.V(2).Infof("Filesystem check passed for %s", devicePath)
+	return nil
 }
 
 func (d *diskUtils) Resize(targetPath string, devicePath, passphrase string) error {

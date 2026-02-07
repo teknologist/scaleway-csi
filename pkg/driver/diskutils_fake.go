@@ -190,3 +190,8 @@ func (f *fakeDiskUtils) CloseDevice(volumeID string) error {
 func (f *fakeDiskUtils) GetMappedDevicePath(volumeID string) (string, error) {
 	return "", nil
 }
+
+// CheckAndRepairFilesystem is a no-op for the fake disk utils.
+func (f *fakeDiskUtils) CheckAndRepairFilesystem(devicePath string, fsType string) error {
+	return nil
+}

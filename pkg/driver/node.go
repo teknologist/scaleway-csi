@@ -154,6 +154,16 @@ func (d *nodeService) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 
 	klog.V(4).Infof("Volume %s with ID %s will be mounted on %s with type %s and options %s", volumeName, volumeID, stagingTargetPath, fsType, strings.Join(mountOptions, ","))
 
+	// Verify block device accessibility and repair dirty filesystems before mount.
+	// Catches I/O errors from improper detach that would cause FormatAndMount to
+	// run mkfs on an existing filesystem (destroying data).
+	if fsType != "" {
+		if err := d.diskUtils.CheckAndRepairFilesystem(devicePath, fsType); err != nil {
+			return nil, status.Errorf(codes.Internal,
+				"filesystem check failed for volume %s on %s: %v", volumeID, devicePath, err)
+		}
+	}
+
 	// format and mounting volume
 	if err := d.diskUtils.FormatAndMount(stagingTargetPath, devicePath, fsType, mountOptions); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to format and mount device from (%q) to (%q) with fstype (%q) and options (%q): %s",
